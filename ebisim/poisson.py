@@ -8,7 +8,7 @@ from functools import partial
 from . import elements
 from . import distributions
 from . import beams
-from .physconst import EPS_0, MINIMAL_KBT, MINIMAL_DENSITY
+from .physconst import EPS_0
 
 class PoissonSolver:
     """
