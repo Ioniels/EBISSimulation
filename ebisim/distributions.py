@@ -1,9 +1,10 @@
 import numpy as np
-from numpy import linspace
-from beams import *
-from physconst import *
-from plasma import *
-from xs import *
+import numba
+
+from .elements import cast_to_ChemicalElement
+from .beams import RexElectronBeam
+from .physconst import PI, Q_E, C_L, M_E_EV
+from .physconst import MINIMAL_DENSITY, MINIMAL_KBT
 
 
 def dict_charges():
@@ -18,6 +19,16 @@ def dict_charges():
     return [ion_dict_default, electron_dict_default]
 
 
+@numba.jit
+def electron_velocity(e_kin):
+    """
+    Returns the electron velocity corresponding to a kin. energy in m/s
+
+    Input Parameters
+    e_kin - electron energy in eV
+    """
+    return C_L * np.sqrt(1 - (M_E_EV / (M_E_EV + e_kin))**2)
+
 class ChargeDistributions:
     """
     Class used to store different charge distributions for electrons and ions.
@@ -30,7 +41,7 @@ class ChargeDistributions:
     The problem is defined in cylindrical coordinates, so without dependence in (theta, z).
     """
 
-    def __init__(self, element, cur, e_kin):
+    def __init__(self, element, cur, e_kin, NkT):
         """
         Defines the general problem constants (current density, electron energy and spread)
 
@@ -40,39 +51,33 @@ class ChargeDistributions:
         e_kin - electron energy [eV]
         """
         # Single ion specie
-        self._element = elements.cast_to_ChemicalElement(element)
+        self._element = cast_to_ChemicalElement(element)
+        self._NkT = NkT
+        # REXEBIS electron beam - With: Herrmann radius
         self._cur = cur
-        self._NkT = np.ones(2 * (self._element.z + 1))
-        self._NkT[:self._element.z + 1] *= MINIMAL_DENSITY
-        self._NkT[self._element.z + 1:] *= MINIMAL_KBT
-        self._NkT[2] = 2e16
-        self._NkT[3] = 3e16
-        self._NkT[4] = 3e16
-        self._NkT[5] = 2e16
-        self._NkT[6] = 1e16
-        self._NkT[self._element.z + 3] = 15
-        self._NkT[self._element.z + 4] = 20
-        self._NkT[self._element.z + 5] = 20
-        self._NkT[self._element.z + 6] = 15
-        self._NkT[self._element.z + 7] = 10
-
-        # REXEBIS electron beam - With: Herrmann radius, U_drift = 800 V
         self._e_kin = e_kin
         self._ve = electron_velocity(self._e_kin)
         self._rexebeam = RexElectronBeam(self._cur)
         self._rd = self._rexebeam._r_d
         self._re = self._rexebeam.herrmann_radius(self._e_kin)
         self._Q_e = self._cur / self._ve
-        self._ud = 800
-
-        # Default initial condition for solving the EBIS ODE System (all atoms in 1+ charge state)
-        self._default_initial = np.ones(2*(self._element.z + 1))
-        self._default_initial[:self._element.z + 1] *= MINIMAL_DENSITY
-        self._default_initial[self._element.z + 1:] *= MINIMAL_KBT
-        self._default_initial[1] = 1e16  # Density for CS 1+
-        self._default_initial[self._element.z + 2] = 0.5  # Temperature for CS 1+
-
+        # Default values
+        self._sol_ion_dict = None
+        self._sol_electron_dict = None
         self._default_model = ['boltzmann', 'normal']
+
+    @property
+    def NkT(self):
+        """Returns the energy density array"""
+        return self._NkT
+
+    @NkT.setter
+    def NkT(self, val):
+        """Set NkT to new value and delete existing solutions"""
+        if val != self._NkT:
+            self._sol_ion_dict = None
+            self._sol_electron_dict = None
+            self._NkT = val
 
     def n_i_null(self, r, y):
         """
@@ -104,6 +109,26 @@ class ChargeDistributions:
                   for i in range(len(q_l)))
         rho_p = sum(- N[q_l[i]] * Q_E * q_l[i]**2 / kbT[q_l[i]]**2 * np.exp(-y * q_l[i] / kbT[q_l[i]])
                     for i in range(len(q_l)))
+        return [rho, rho_p]
+
+    def n_i_maxwell1(self, r, y):
+        """
+        Returns the Maxwell-Boltzmann density distribution with 1 degree of freedom the ions.
+                the derivative of this distribution regarding y.
+
+        Input Parameters:
+        r - Radial position [m].
+        y - Potential [V].
+        """
+        N = self._NkT[:self._element.z + 1]
+        kbT = self._NkT[self._element.z + 1:]
+        q_l = np.array(range(self._element.z + 1))
+        mask = (N > MINIMAL_DENSITY) & (kbT > MINIMAL_KBT)
+        q_l = q_l[mask]
+        rho = sum(N[q_l[i]] * Q_E * q_l[i] * (np.clip(y * q_l[i] * kbT[q_l[i]] * PI, 0, None))**(-1/2) *
+                  np.exp(-y * q_l[i] / kbT[q_l[i]]) for i in range(len(q_l)))
+        rho_p = sum(-N[q_l[i]] * Q_E * q_l[i]**2 * (np.clip(y * q_l[i] * kbT[q_l[i]]**(4/3) * PI, 0, None)) ** (-1 / 2)
+                    * np.exp(-y * q_l[i] / kbT[q_l[i]]) for i in range(len(q_l)))
         return [rho, rho_p]
 
     def n_i_maxwell3(self, r, y):
