@@ -9,11 +9,7 @@ from xs import *
 def dict_charges():
     """
     Dictionaries of the electron and ion charge distributions.
-    Need to find a way not to evaluate all distributions when the dictionary is called...
 
-    Input Parameters:
-    r - Radial position [m].
-    y - Potential [V].
     """
     ion_dict_keys = ["boltzmann", "maxwell3", "maxwell5", "gaussian", "null"]
     electron_dict_keys = ["normal", "gaussian"]
