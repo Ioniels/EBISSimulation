@@ -22,33 +22,34 @@ def dict_charges():
 @numba.jit
 def electron_velocity(e_kin):
     """
-    Returns the electron velocity corresponding to a kin. energy in m/s
+    Returns the electron velocity [m/s] corresponding to a kinetic energy.
 
-    Input Parameters
-    e_kin - electron energy in eV
+    Input Parameter:
+    e_kin - electron energy [eV]
     """
     return C_L * np.sqrt(1 - (M_E_EV / (M_E_EV + e_kin))**2)
 
 class ChargeDistributions:
     """
-    Class used to store different charge distributions for electrons and ions.
+    Class used to store different charge-density distributions for electrons and ions.
     Returns charge density distributions evaluated in (r, y) for a specific model.
 
     Properties describing distributions provide the density and its derivative by the potential.
     Important: the property name of a distribution has to match the key in the dictionary.
                to keep (r, y) as input parameters for all properties of distributions.
 
-    The problem is defined in cylindrical coordinates, so without dependence in (theta, z).
+    The problem is defined in cylindrical coordinates, no dependence in (theta, z).
     """
 
     def __init__(self, element, cur, e_kin, NkT):
         """
-        Defines the general problem constants (current density, electron energy and spread)
+        Defines the general problem constants.
 
-        Input parameters
-        element - Identifier of the element under investigation
-        cur - electron current [A]
-        e_kin - electron energy [eV]
+        Input parameters:
+        element - Identifier of the element under investigation.
+        cur - electron current [A].
+        e_kin - electron energy [eV].
+        NkT - energy density array [eVm-1]
         """
         # Single ion specie
         self._element = cast_to_ChemicalElement(element)
@@ -92,9 +93,8 @@ class ChargeDistributions:
 
     def n_i_boltzmann(self, r, y):
         """
-        Returns the Boltzmann density distribution for the ions.
+        Returns the Boltzmann charge distribution for the ions.
                 the derivative of this distribution regarding y.
-        To be reviewed if only "MINIMAL" densities should be excluded.
 
         Input Parameters:
         r - Radial position [m].
@@ -113,7 +113,7 @@ class ChargeDistributions:
 
     def n_i_maxwell1(self, r, y):
         """
-        Returns the Maxwell-Boltzmann density distribution with 1 degree of freedom the ions.
+        Returns the Maxwell-Boltzmann charge distribution with 1 degree of freedom the ions.
                 the derivative of this distribution regarding y.
 
         Input Parameters:
@@ -133,7 +133,7 @@ class ChargeDistributions:
 
     def n_i_maxwell3(self, r, y):
         """
-        Returns the Maxwell-Boltzmann density distribution with 3 degrees of freedom the ions.
+        Returns the Maxwell-Boltzmann charge distribution with 3 degrees of freedom the ions.
                 the derivative of this distribution regarding y.
 
         Input Parameters:
@@ -153,7 +153,7 @@ class ChargeDistributions:
 
     def n_i_maxwell5(self, r, y):
         """
-        Returns the Maxwell-Boltzmann density distribution with 5 degrees of freedom the ions.
+        Returns the Maxwell-Boltzmann charge distribution with 5 degrees of freedom the ions.
                 the derivative of this distribution regarding y.
 
         Input Parameters:
@@ -173,7 +173,7 @@ class ChargeDistributions:
 
     def n_i_gaussian(self, r, y):
         """
-        Returns the Boltzmann distribution for the ions
+        Returns the Gaussian charge distribution for the ions.
                 the derivative of this distribution regarding y.
 
         Input Parameters
@@ -225,11 +225,12 @@ class ChargeDistributions:
     def dict_charges_set(self, r, y, model):
         """
         Returns ion and electron dictionaries of charge densities.
-        Only the matching model to dictionary key distributions are evaluated in (r, y)
+        Only the matching model in the dictionary of distributions are evaluated in (r, y).
 
-        Input Parameter:
+        Input Parameters:
         r - Radial position [m].
         y - Potential [V].
+        model - 2-element array of string describing the ionic and electronic distributions.
         """
         ion_dict = dict_charges()[0]
         electron_dict = dict_charges()[1]
@@ -244,10 +245,10 @@ class ChargeDistributions:
         Verifies if: the input model is a 2-element array of string.
                      the input model has two corresponding properties.
                      the input model has two corresponding dictionary keys.
-        Returns default_model if none of the above is verified.
+        Returns: default_model (boltzmann, gaussian), if none of the above is verified.
 
         Input Parameter:
-        model - 2-element array of string.
+        model - 2-element array of string describing the ionic and electronic distributions.
         """
         msg_default = 'Set model to default: ' + str(self._default_model)
         if model is None:
@@ -287,6 +288,7 @@ class ChargeDistributions:
         Input Parameters:
         r - Radial position [m].
         y - Potential [V].
+        model - 2-element array of string describing the ionic and electronic distributions.
         """
         _ = self.dict_charges_set(r, y, model)
         key_i = next((k for k, v in self._sol_ion_dict.items() if v is not False), self._default_model[0])
@@ -300,6 +302,7 @@ class ChargeDistributions:
         Input Parameters:
         r - Radial position [m]
         y - Potential [V].
+        model - 2-element array of string describing the ionic and electronic distributions.
         """
         _ = self.dict_charges_set(r, y, model)
         key_e = next((k for k, v in self._sol_electron_dict.items() if v is not False), self._default_model[1])
@@ -308,11 +311,13 @@ class ChargeDistributions:
 
     def charge_prime(self, r, y, model=list):
         """
-         Returns in the derivative of the charge density distributions chosen from the dictionary.
-         Only used for the Jacobian in the Poisson solver.
+         Returns the derivative of the charge density distributions chosen from the dictionary.
+         Only used to input the Jacobian in differential equation solver.
 
          Input Parameter:
          r - Radial position [m]
+         y - Potential [V].
+         model - 2-element array of string describing the ionic and electronic distributions.
          """
         _ = self.dict_charges_set(r, y, model)
         key_i = next((k for k, v in self._sol_ion_dict.items() if v is not False), self._default_model[0])
