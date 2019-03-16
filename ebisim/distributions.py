@@ -49,7 +49,7 @@ class ChargeDistributions:
         element - Identifier of the element under investigation.
         cur - electron current [A].
         e_kin - electron energy [eV].
-        NkT - energy density array [eVm-1]
+        NkT - energy density array [eV.m-3]
         """
         # Single ion specie
         self._element = cast_to_ChemicalElement(element)
@@ -93,7 +93,7 @@ class ChargeDistributions:
 
     def n_i_boltzmann(self, r, y):
         """
-        Returns the Boltzmann charge distribution for the ions.
+        Returns the Boltzmann charge distribution for the ions [C.m-3].
                 the derivative of this distribution regarding y.
 
         Input Parameters:
@@ -105,9 +105,9 @@ class ChargeDistributions:
         q_l = np.array(range(self._element.z + 1))
         mask = (N > MINIMAL_DENSITY) & (kbT > MINIMAL_KBT)
         q_l = q_l[mask]
-        rho = sum(N[q_l[i]] * Q_E * q_l[i] / kbT[q_l[i]] * np.exp(-y * q_l[i] / kbT[q_l[i]])
+        rho = sum(N[q_l[i]] * Q_E * q_l[i] * np.exp(-y * q_l[i] / kbT[q_l[i]])
                   for i in range(len(q_l)))
-        rho_p = sum(- N[q_l[i]] * Q_E * q_l[i]**2 / kbT[q_l[i]]**2 * np.exp(-y * q_l[i] / kbT[q_l[i]])
+        rho_p = sum(- N[q_l[i]] * Q_E * q_l[i]**2 / kbT[q_l[i]] * np.exp(-y * q_l[i] / kbT[q_l[i]])
                     for i in range(len(q_l)))
         return [rho, rho_p]
 
