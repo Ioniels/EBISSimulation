@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+from time import time
 from numpy import linspace
 from scipy.integrate import solve_ivp
 from functools import partial
@@ -17,7 +18,7 @@ class PoissonSolver:
     The problem is defined in cylindrical coordinates, i.e. no dependence in (theta, z).
     """
 
-    def __init__(self, element, cur, e_kin):
+    def __init__(self, element, cur, e_kin, nb_p=10000):
         """
         Defines the general problem constants (current density, electron energy and spread)
 
@@ -36,7 +37,6 @@ class PoissonSolver:
         self._rd = self._rexebeam._r_d
         self._ud = 800
         # Plotting hard-coded r limits
-        nb_p = 10000
         self._r_eval = linspace(0, self._rd, nb_p)
         msg = 'r_e / r_d = {:.2}'.format(self._re / self._rd)
         print(msg)
@@ -76,11 +76,16 @@ class PoissonSolver:
         ic - 2-element array with initial conditions U and dU/dr in r = 0
 
         """
-        rho_tot = self._charge.ion_charge(r, y[0], model) + self._charge.electron_charge(r, y[0], model)
+        rho_tot = self._charge.ion_charge(r, abs(y[0]), model) + \
+                  self._charge.electron_charge(r, abs(y[0]), model)
         if r == 0:
             return np.array(ic)
-        else:
+        if y[0] < 0:
             return np.array([y[1], -rho_tot / EPS_0 - y[1] / r])
+        else:
+
+            return np.array([y[1], -rho_tot / EPS_0 - y[1] / r])
+#             return np.array([y[1] / r, -r * rho_tot / EPS_0])
 
     def _jac(self, r, y, model, ic):
         """
@@ -92,10 +97,12 @@ class PoissonSolver:
         ic - 2-element array with initial conditions U and dU/dr in r = 0
 
         """
-        jac_21 = -self._charge.charge_prime(r, y[0], model) / EPS_0
+        jac_21 = -self._charge.charge_prime(r, abs(y[0]), model) / EPS_0
         jac_21_0 = -self._charge.charge_prime(0, ic[0], model) / EPS_0
         if r == 0:
             jac = [[0, 1], [jac_21_0, 0]]
+        elif y[0] < 0:
+            jac = [[0, 1], [-jac_21, -1 / r]]
         else:
             jac = [[0, 1], [jac_21, -1 / r]]
         return jac
@@ -113,15 +120,29 @@ class PoissonSolver:
         """
         self._NkT = NkT
         self._charge = distributions.ChargeDistributions(self._element, self._cur, self._e_kin, self._NkT)
+        # Issue when electron beam starts to fully compensate
+        #print("Electron charge r = 0, normal and gaussian:")
+        #print(self._charge.n_e_gaussian(0,0))
+        #print(self._charge.n_e_normal(0, 0))
+        #print("Ion charge r = 0, boltzmann, Mi and gaussian:")
+        #print(self._charge.n_i_boltzmann(0, 0))
+        #print(self._charge.n_i_maxwell1(0, 0))
+        #print(self._charge.n_i_maxwell3(0, 0))
+        #print(self._charge.n_i_maxwell5(0, 0))
+        #print(self._charge.n_i_gaussian(0, 0))
         self._model = self._charge.verify_model(model)
         ic = (0, 0)
         rhs = partial(self._rhs, model=self._model, ic=ic)
         jac = partial(self._jac, model=self._model, ic=ic)
+        #print('Solving Poisson equation... Model: ' + str(self._model))
+        #ts = time()
         y = solve_ivp(rhs, (0, self._rd), ic, t_eval=self._r_eval, jac=jac, method='Radau')
+        #msg = 'Solved in {:.4} [s]'.format(time() - ts)
+        #print(msg)
         # Add a constant to match U(r = rd) = Ud
         y.y[0] = self._ud - y.y[0][-1] + y.y[0]
         self._sol_potential = y
-        self._sol_charge = self._charge.ion_charge(y.t, y.y[0] - y.y[0][0], self._model) + \
+        self._sol_charge = self._charge.ion_charge(y.t, abs(y.y[0] - y.y[0][0]), self._model) + \
                         self._charge.electron_charge(y.t, y.y[0], self._model)
         return y
 
@@ -148,7 +169,8 @@ class PoissonSolver:
                  '-', ms=6, mfc='w', mec='b', linewidth=2, label='n$_e$: ' + str(self._model[1]))
         plt.plot(self._r_eval / self._rd, rho_tot_norm,
                  '-', ms=6, mfc='w', mec='b', linewidth=2, label='Total')
-        plt.xlim((0, 0.1))
+        plt.xlim((0, 1))
+        #plt.ylim((-1, 1.5))
         plt.xlabel('r / r{$_Drift$}')
         plt.ylabel('Density / n$_e^0$')
         plt.title('Density distributions (' + self._element.symbol + '$^{i+}$, I$_e$ [A] =' + str(self._cur)
@@ -180,13 +202,14 @@ class PoissonSolver:
             NkT_q[k + self._element.z  + 1] = self._NkT[k + self._element.z  + 1]
             if not sum(NkT_q) == 0:
                 self._charge = distributions.ChargeDistributions(self._element, self._cur, self._e_kin, NkT_q)
-                rho_i_norm = self._charge.ion_charge(self._r_eval, phi_tot.y[0] - phi_tot.y[0][0], self._model) / norm
+                rho_i_norm = self._charge.ion_charge(self._r_eval, abs(phi_tot.y[0] - phi_tot.y[0][0]), self._model) \
+                             / norm
                 plt.plot(self._r_eval / self._rd, rho_i_norm,
-                         '-', ms=6, mfc='w', mec='b', linewidth=2, label='n$_i^{q+}$: q=' + str(k))
+                        '-', ms=6, mfc='w', mec='b', linewidth=2, label='n$_i^{q+}$: q=' + str(k))
         plt.plot(self._r_eval / self._rd, rho_i_tot_norm ,
                  '-', ms=6, mfc='w', mec='b', linewidth=2, label='n$_i^{q+}$: q=all')
         plt.xlim((0, 0.1))
-        plt.ylim((0, 1))
+        #plt.ylim((0, 1.1))
         plt.xlabel('r / r{$_Drift$}')
         plt.ylabel('Density / n$_i^0$')
         plt.title(str(self._model[0]))
@@ -219,6 +242,7 @@ class PoissonSolver:
         plt.plot(phi_tot.t / self._rd, phi_tot.y[0] - phi_e.y[0],
                  linewidth=2, mec='b', label='Ions: ' + str(model_pb[0]))
         plt.xlim((0, 1))
+        #plt.ylim((0, max(phi_tot.y[0])))
         plt.xlabel('r / r$_{Drift}$')
         plt.ylabel('Potential [V]')
         plt.title('Potential distributions (' + self._element.symbol + '$^{i+}$, I$_e$ [A] =' + str(self._cur)

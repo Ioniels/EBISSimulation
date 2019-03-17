@@ -1,5 +1,6 @@
 import numpy as np
 import numba
+import math
 
 from .elements import cast_to_ChemicalElement
 from .beams import RexElectronBeam
@@ -125,9 +126,10 @@ class ChargeDistributions:
         q_l = np.array(range(self._element.z + 1))
         mask = (N > MINIMAL_DENSITY) & (kbT > MINIMAL_KBT)
         q_l = q_l[mask]
-        rho = sum(N[q_l[i]] * Q_E * q_l[i] * (np.clip(y * q_l[i] * kbT[q_l[i]] * PI, 0, None))**(-1/2) *
+        rho = sum(N[q_l[i]] * Q_E * q_l[i] * (np.clip(kbT[q_l[i]] / y / q_l[i] / PI, 0, None))**(1/2) *
                   np.exp(-y * q_l[i] / kbT[q_l[i]]) for i in range(len(q_l)))
-        rho_p = sum(-N[q_l[i]] * Q_E * q_l[i]**2 * (np.clip(y * q_l[i] * kbT[q_l[i]]**(4/3) * PI, 0, None)) ** (-1 / 2)
+        rho_p = sum(-N[q_l[i]] * Q_E * (2 * q_l[i] * y + kbT[q_l[i]])
+                    / (2 * PI**1/2 * y**2 * np.clip(kbT[q_l[i]] / q_l[i] / y, 0, None))
                     * np.exp(-y * q_l[i] / kbT[q_l[i]]) for i in range(len(q_l)))
         return [rho, rho_p]
 
@@ -146,7 +148,7 @@ class ChargeDistributions:
         mask = (N > MINIMAL_DENSITY) & (kbT > MINIMAL_KBT)
         q_l = q_l[mask]
         rho = sum(2 * N[q_l[i]] * Q_E * q_l[i] * (np.clip(y * q_l[i] / PI, 0, None))**(1/2) *
-                  (1 / kbT[q_l[i]])**(3/2) * np.exp(-y * q_l[i] / kbT[q_l[i]]) for i in range(len(q_l)))
+                  (1 / kbT[q_l[i]])**(1/2) * np.exp(-y * q_l[i] / kbT[q_l[i]]) for i in range(len(q_l)))
         rho_p = sum(-2 * N[q_l[i]] * Q_E * q_l[i]**2 * (np.clip(y * q_l[i] / PI, 0, None))**(1/2) *
                     (1 / kbT[q_l[i]])**(5/2) * np.exp(-y * q_l[i] / kbT[q_l[i]]) for i in range(len(q_l)))
         return [rho, rho_p]
