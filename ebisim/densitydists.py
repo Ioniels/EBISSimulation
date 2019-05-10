@@ -53,6 +53,7 @@ def n_i_maxwell1_s(y, NkT, Z):
     Returns the Maxwell-Boltzmann charge distribution with 1 degree of freedom the ions.
             the derivative of this distribution regarding y.
 
+            It's wrong!!
     Input Parameters:
     y - np.ndarray Potential [V].
     NkT -
