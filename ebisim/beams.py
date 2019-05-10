@@ -28,7 +28,7 @@ class ElectronBeam:
         b_d - magnetic flux density in the trap centre in Tesla
         r_d - drift tube radius in m
         r_c - cathode radius in m
-        t_c - cathode temperatur in K
+        t_c - cathode temperature in K
         b_c - magnetic flux density on the cathode surface
         """
         self._cur = cur
