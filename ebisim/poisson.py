@@ -91,8 +91,9 @@ class PoissonSolver:
         return self._sol_df_densities
 
     def reset_df(self):
-        self._sol_df_densities = pd.DataFrame({r'$n_e^0$': [], r'$n_i^0$': [], r'$N_edt$': [],
-                               r'$N_idt$': [], r'$N_erh$': [], r'$N_irh$': []})
+        self._sol_df_densities = pd.DataFrame({'re': [], 'phi_well': [], 'rho_e_y0': [], 'rho_i_y0': [],
+                                               'alpha_rh': [], 'alpha_dt': [], 'Q_i_rh': [],  'Q_i_dt': [],
+                                               'N_e_rh': [], 'N_e_dt': [], 'N_i_dt': [], 'N_i_rh': []})
 
     @property
     def model(self):
@@ -196,7 +197,7 @@ class PoissonSolver:
         phi_re = self.solution.y[0][re_idx]
         n_i = n_i_pb(model_n_i=self.model[0], y=self.solution.y[0], NkT=self._NkT, Z=Z)
         n_e = n_e_pb(model_n_e=self.model[1], r=r, Qe=self._Q_e, re=self._re)
-        n_e_y0, n_i_y0 = n_e[0], n_i[0, -1]
+        rho_e_y0, rho_i_y0 = n_e[0], n_i[0, -1]
         N_e_rh = simps(-2 * PI * re * n_e[:re_idx] / Q_E, re)
         N_e_dt = simps(-2 * PI * r * n_e / Q_E, r)
         N_i_dt, N_i_rh = np.zeros(Z + 1), np.zeros(Z + 1)
@@ -204,8 +205,13 @@ class PoissonSolver:
         for i in q_threshold:
             N_i_dt[i] += simps(2 * PI * r * n_i[:, i] / Q_E / i, r)
             N_i_rh[i] += simps(2 * PI * re * n_i[:re_idx, i] / Q_E / i, re)
-        df = pd.DataFrame({'re': [self._re], 'phi_well': [phi_re], 'n_e_y0': [n_e_y0], 'n_i_y0': [n_i_y0],
-                           'N_e_dt': [N_e_dt], 'N_i_dt': [N_i_dt], 'N_e_rh': [N_e_rh], 'N_i_rh': [N_i_rh]})
+        Q_i_dt = simps(2 * PI * r * n_i[:, -1], r)
+        alpha_dt = 100 * Q_i_dt / (N_e_dt * Q_E)
+        Q_i_rh = simps(2 * PI * re * n_i[:re_idx, -1], re)
+        alpha_rh = 100 * Q_i_rh / (N_e_rh * Q_E)
+        df = pd.DataFrame({'re': [self._re], 'phi_well': [phi_re], 'rho_e_y0': [rho_e_y0], 'rho_i_y0': [rho_i_y0],
+                           'alpha_rh': [alpha_rh], 'alpha_dt': [alpha_dt], 'Q_i_rh': [Q_i_rh],  'Q_i_dt': [Q_i_dt],
+                           'N_e_rh': [N_e_rh], 'N_e_dt': [N_e_dt], 'N_i_dt': [N_i_dt], 'N_i_rh': [N_i_rh]})
         if self._sol_df_densities is None: self.reset_df()
         self._sol_df_densities = self._sol_df_densities.append(df)
         return self._sol_df_densities
