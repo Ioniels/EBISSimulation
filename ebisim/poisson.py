@@ -247,7 +247,6 @@ class PoissonSolver:
         if reset_df: self.reset_df()
 
         # Dynamical density evolution problem: to be built
-        print('Solving dynamical density problem...')
         j = electron_velocity(self.e_kin) * n_e_pb(model_n_e=self._model[1], r=0, Qe=self._Q_e, re=self._re)[0]
         j = abs(j) * 1e-4  # convert to A/cm**2
         problem = ComplexEBISProblem(self._element.symbol, j, self.e_kin, 15)
@@ -257,7 +256,6 @@ class PoissonSolver:
         NkT[0, :] = 0
         self._df_NkT = NkT
         # Start iteration for space-charge problem
-        print('Solving space-charge problem...')
         widgets = [Percentage(), ' ', Bar(), ' ', Counter(), ' / ', str(len(NkT[1, :])), ' | ', Timer(),
                    ' | ', AdaptiveETA(), ' | ', FileTransferSpeed()]
         pbar = ProgressBar(widgets=widgets, maxval=len(NkT[1, :]))
@@ -353,17 +351,13 @@ class PoissonSolver:
             N_ti_dt[:, t_i] += N_i_dt[:] / parameters['N_e_dt'][t_i]
             N_ti_rh[:, t_i] += N_i_rh[:] / parameters['N_e_rh'][t_i]
 
-
-        fig, ax = plt.subplots()
         fig_1 = plot_generic_evolution(t, N_ti_dt, xlim=(1e-6, 1e-2), ylim=(1e-29, 1),
-                                                ylabel='Relative integrated densities to drift tube [m-1]',
+                                                ylabel='Relative integrated densities to drift tube',
                                                 title=self._title, xscale="log", yscale="log", legend=False,
                                                 label_lines=True, plot_sum=False)
         fig_2 = plot_generic_evolution(t, N_ti_rh, xlim=(1e-6, 1e-2), ylim=(1e-29, 1),
-                                            ylabel='Relative integrated densities to Hermann radius [m-1]',
+                                            ylabel='Relative integrated densities to Hermann radius',
                                             title=self._title, xscale="log", yscale="log", legend=False,
                                             label_lines=True, plot_sum=False)
-        fig.axes.append(fig_1)
-        fig.axes.append(fig_2)
         return plt
 
