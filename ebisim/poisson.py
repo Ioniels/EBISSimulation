@@ -5,12 +5,14 @@ import matplotlib.pyplot as plt
 
 from numpy import linspace
 from scipy.integrate import solve_ivp
-from scipy.integrate import quad, simps
+from scipy.integrate import simps
+from progressbar import ProgressBar, Counter, Timer, AdaptiveETA, Percentage, Bar, FileTransferSpeed
 
-from .plotting import _decorate_axes
+from .plotting import _decorate_axes, plot_generic_evolution
 from ebisim import elements
 from .densitydists import *
 from ebisim import beams
+from ebisim.problems import ComplexEBISProblem
 from ebisim.physconst import EPS_0, M_E_EV, C_L
 
 
@@ -43,13 +45,15 @@ class PoissonSolver:
         """
         # Model variable which defines the electron and ion distributions
         self._default_model = ['boltzmann', 'normal']
-        self._msg_default_model = 'Warning: set electron model to default distribution ' + str(self._default_model)
-        self._model = self._msg_default_model
+        self._msg_default_model = 'Warning! Distribution models are set to default: ' + str(self._default_model)
+        self._model = None
         # Solver initial conditions
         self._ic = (0, 0)
         self._jac = np.zeros(2)
         self._solution = None
-        self._sol_df_densities = None
+        self._df_NkT = None
+        self._df_parameters = None
+        self._df_potential = None
         self._no_ions = False
         # Information describing input ion and electron distributions.
         self._NkT = 0
@@ -64,7 +68,6 @@ class PoissonSolver:
         self._r_eval = linspace(0, self._rd, nb_p)
         self._ud = 800
         # Plotting hard coded help
-        self._color = plt.get_cmap('inferno').colors
         self._title = self._element.symbol + '$^{i+}$, I$_e$ [A] =' + str(self._cur) \
                       + ', E$_e^{kin}$ [eV] =' + str(self.e_kin) + ', r$_e$ / r$_t$ = {:.2}'.format(self._re / self._rd)
 
@@ -82,18 +85,31 @@ class PoissonSolver:
 
     @property
     def solution(self):
-        """Returns the solution of the lates solve of this problem"""
+        """Returns the solution of the solved problem [tuple (phi, dphi/dr)]"""
         return self._solution
 
     @property
-    def sol_df_densities(self):
-        """Returns the solution of the lates solve of this problem"""
-        return self._sol_df_densities
+    def df_NkT(self):
+        """Returns density-energy data-frame of concatenated array [np.ndarray [m-3, ev]]"""
+        return self._df_NkT
+
+    @property
+    def df_parameters(self):
+        """Pandas data-frame built to visualize successive important physics parameters"""
+        return self._df_parameters
+
+    @property
+    def df_potential(self):
+        """Pandas data-frame built to visualize successive potential solution [np.ndarray in Volt]"""
+        return self._df_potential
 
     def reset_df(self):
-        self._sol_df_densities = pd.DataFrame({'re': [], 'phi_well': [], 'rho_e_y0': [], 'rho_i_y0': [],
-                                               'alpha_rh': [], 'alpha_dt': [], 'Q_i_rh': [],  'Q_i_dt': [],
-                                               'N_e_rh': [], 'N_e_dt': [], 'N_i_dt': [], 'N_i_rh': []})
+        """Used to reset all pandas data-frames"""
+        self._df_parameters = pd.DataFrame({'electron': [], 'ion': [], 're': [], 'phi_well': [], 'rho_e_y0': [],
+                                            'rho_i_y0': [], 'alpha_rh': [], 'alpha_dt': [], 'Q_i_rh': [],  'Q_i_dt': [],
+                                            'N_e_rh': [], 'N_e_dt': []})
+        self._df_potential = pd.DataFrame({'r': self._r_eval})
+        self._df_NkT = pd.DataFrame()
 
     @property
     def model(self):
@@ -102,19 +118,19 @@ class PoissonSolver:
 
     @model.setter
     def model(self, val):
-        """Set model to new value and delete existing solution"""
+        """Set model to new value while checking on the availability of the value"""
         if val == self._model:
             pass
         elif not isinstance(val, list):
-            print('Warning: type of the input model is not recognized...')
+            print('Warning! Type of the input model is not recognized...')
             print(self._msg_default_model)
             self._model = self._default_model
         elif not isinstance(val[0], str) or not isinstance(val[1], str):
-            print('Warning: at least one distribution in the model is not given as a string...')
+            print('Warning! At least one distribution in the model is not given as a string...')
             print(self._msg_default_model)
             self._model = self._default_model
         elif 'n_i_' + val[0].lower() + '_s' not in globals() or 'n_e_' + val[1].lower() + '_s' not in globals():
-            print('Warning: at least one distribution in the model is not defined...')
+            print('Warning! At least one distribution in the model is not defined...')
             print(self._msg_default_model)
             self._model = self._default_model
         else:
@@ -148,8 +164,7 @@ class PoissonSolver:
         """
         return self._jac
 
-#    @nb.jit
-    def solve(self, NkT, model=None, save=True):
+    def solve(self, NkT, model=None, frame_para=False, frame_phi=False):
         """
         Solves Poisson equation
 
@@ -158,15 +173,15 @@ class PoissonSolver:
 
         """
         self._NkT = NkT
-        self.model = model
+        if model: self.model = model
         solution = solve_ivp(self.rhs, (0, self._rd), self._ic, jac=self.jac, t_eval=self._r_eval, method='Radau')
         # Faster option:
         #solution = solve_ivp(self.rhs, (0, self._rd), self._ic, eval=self._r_eval, method='LSODA')
         self._solution = solution
-        if save is True: self.save_sol_densities()
+
+        if frame_para or frame_phi: self.frame_sol(save_para=frame_para, save_phi=frame_phi)
         return solution
 
-#    @nb.jit
     def solve_e(self):
         """
         Solves Poisson equation with initial conditions y(r=0) and dy/dr(r=0) = 0
@@ -182,43 +197,82 @@ class PoissonSolver:
         self._no_ions = False
         return solution
 
-    def save_sol_densities(self):
+    def frame_sol(self, save_para=True, save_phi=True):
         """
-        Save in pandas important results about the integrated densities of the last solved problem.
+        Save in pandas' data-frames important results from the previously solved problem.
 
 
         """
         if self.solution is None:
-            print("Error! Need to solve problem before plotting")
-        Z = self._element.z
-        r = self.solution.t
-        re = r[r <= self._re]
-        re_err, re_idx = re[-1] / self._re, len(re)
-        phi_re = self.solution.y[0][re_idx]
-        n_i = n_i_pb(model_n_i=self.model[0], y=self.solution.y[0], NkT=self._NkT, Z=Z)
-        n_e = n_e_pb(model_n_e=self.model[1], r=r, Qe=self._Q_e, re=self._re)
-        rho_e_y0, rho_i_y0 = n_e[0], n_i[0, -1]
-        N_e_rh = simps(-2 * PI * re * n_e[:re_idx] / Q_E, re)
-        N_e_dt = simps(-2 * PI * r * n_e / Q_E, r)
-        N_i_dt, N_i_rh = np.zeros(Z + 1), np.zeros(Z + 1)
-        q_threshold = np.arange(Z + 1)[(self._NkT[:Z + 1] > MINIMAL_DENSITY) & (self._NkT[Z + 1:] > MINIMAL_KBT)]
-        for i in q_threshold:
-            N_i_dt[i] += simps(2 * PI * r * n_i[:, i] / Q_E / i, r)
-            N_i_rh[i] += simps(2 * PI * re * n_i[:re_idx, i] / Q_E / i, re)
-        Q_i_dt = simps(2 * PI * r * n_i[:, -1], r)
-        alpha_dt = 100 * Q_i_dt / (N_e_dt * Q_E)
-        Q_i_rh = simps(2 * PI * re * n_i[:re_idx, -1], re)
-        alpha_rh = 100 * Q_i_rh / (N_e_rh * Q_E)
-        df = pd.DataFrame({'re': [self._re], 'phi_well': [phi_re], 'rho_e_y0': [rho_e_y0], 'rho_i_y0': [rho_i_y0],
-                           'alpha_rh': [alpha_rh], 'alpha_dt': [alpha_dt], 'Q_i_rh': [Q_i_rh],  'Q_i_dt': [Q_i_dt],
-                           'N_e_rh': [N_e_rh], 'N_e_dt': [N_e_dt], 'N_i_dt': [N_i_dt], 'N_i_rh': [N_i_rh]})
-        if self._sol_df_densities is None: self.reset_df()
-        self._sol_df_densities = self._sol_df_densities.append(df)
-        return self._sol_df_densities
+            print("Error! Need to solve problem before framing any solution")
+        if save_para:
+            if self._df_parameters is None:
+                self.reset_df()
+            idx = [self._df_parameters.shape[0]]
+            Z = self._element.z
+            r = self.solution.t
+            re = r[r <= self._re]
+            re_err, re_idx = re[-1] / self._re, len(re)
+            phi_re = self.solution.y[0][re_idx]
+            n_i = n_i_pb(model_n_i=self.model[0], y=self.solution.y[0], NkT=self._NkT, Z=Z)
+            n_e = n_e_pb(model_n_e=self.model[1], r=r, Qe=self._Q_e, re=self._re)
+            rho_e_y0, rho_i_y0 = n_e[0], n_i[0, -1]
+            N_e_rh = simps(-2 * PI * re * n_e[:re_idx] / Q_E, re)
+            N_e_dt = simps(-2 * PI * r * n_e / Q_E, r)
+            Q_i_dt = simps(2 * PI * r * n_i[:, -1], r)
+            alpha_dt = 100 * Q_i_dt / (N_e_dt * Q_E)
+            Q_i_rh = simps(2 * PI * re * n_i[:re_idx, -1], re)
+            alpha_rh = 100 * Q_i_rh / (N_e_rh * Q_E)
+            df_para = pd.DataFrame({'electron': [self.model[1]], 'ion': [self.model[0]], 're': [self._re],
+                                    'phi_well': [phi_re], 'rho_e_y0': [rho_e_y0], 'rho_i_y0': [rho_i_y0],
+                                    'alpha_rh': [alpha_rh], 'alpha_dt': [alpha_dt], 'Q_i_rh': [Q_i_rh],
+                                    'Q_i_dt': [Q_i_dt], 'N_e_rh': [N_e_rh], 'N_e_dt': [N_e_dt]}, index=idx, dtype=float)
+            self._df_parameters = self._df_parameters.append(df_para)
+
+        if save_phi:
+            if self._df_potential is None:
+                self.reset_df()
+            idx = [self._df_potential.shape[1]]
+            self._df_potential = self._df_potential.join(pd.DataFrame({idx[0]: self.solution.y[0]}))
+
+        return
+
+    def solve_dyn(self, model=None, reset_df=True):
+        """
+        Solve ComplexEBISProblem with input species, and electron beam parameters.
+        To do: dynamically change e_kin, r_e, e_fwhm(?), dynamically input overlap factors
+
+        """
+        if model: self.model = model
+        if reset_df: self.reset_df()
+
+        # Dynamical density evolution problem: to be built
+        print('Solving dynamical density problem...')
+        j = electron_velocity(self.e_kin) * n_e_pb(model_n_e=self._model[1], r=0, Qe=self._Q_e, re=self._re)[0]
+        j = abs(j) * 1e-4  # convert to A/cm**2
+        problem = ComplexEBISProblem(self._element.symbol, j, self.e_kin, 15)
+        _ = problem.solve(0.1, method="BDF")
+        NkT = problem.solution.y[:, ::20]
+        t = problem.solution.t[::20]
+        NkT[0, :] = 0
+        self._df_NkT = NkT
+        # Start iteration for space-charge problem
+        print('Solving space-charge problem...')
+        widgets = [Percentage(), ' ', Bar(), ' ', Counter(), ' / ', str(len(NkT[1, :])), ' | ', Timer(),
+                   ' | ', AdaptiveETA(), ' | ', FileTransferSpeed()]
+        pbar = ProgressBar(widgets=widgets, maxval=len(NkT[1, :]))
+        pbar.start()
+        for i in pbar(range(len(NkT[1, :]))):
+            _ = self.solve(NkT[:, i], model=model, frame_para=True, frame_phi=True)
+            pbar.update(i + 1)
+        pbar.finish()
+        self._df_parameters = self._df_parameters.join(pd.DataFrame({'t': t}))
+
+        return
 
     def plot_sol_potentials(self):
         """
-        Plotting of the resulting potential distributions considerent different contributions (electron, ions).
+        Plotting of the lastly solved potential solution, considering the different contributions (electron, ion).
 
         """
         if self.solution is None:
@@ -236,10 +290,10 @@ class PoissonSolver:
         phi_i[:sz_min], r_i[:sz_min] = phi[:sz_min] - phi_e[:sz_min], r[:sz_min]
 
         fig, ax = plt.subplots()
-        ax.plot(r, phi, '-', c=self._color[0], label='Total')
-        ax.plot(r, phi_p, '-', c=self._color[0], label='d_Total')
-        ax.plot(r_e, phi_e, ':', c=self._color[0], label='Electrons: ' + str(self.model[1]))
-        ax.plot(r_i, phi_i, '--', c=self._color[0], label='Ions: ' + str(self.model[0]))
+        ax.plot(r, phi, '-', c='k', label='Total')
+        ax.plot(r, phi_p, '-', c='k', label='d_Total')
+        ax.plot(r_e, phi_e, ':', c='b', label='Electrons: ' + str(self.model[1]))
+        ax.plot(r_i, phi_i, '--', c='r', label='Ions: ' + str(self.model[0]))
         x_lim, y_lim = (0, 1), (0, max(phi))
         _decorate_axes(ax, title=self._title, xlabel=r'Relative radius $\frac{r}{r_{DT}}$', ylabel='Potential [V]',
                        xlim=x_lim, ylim=y_lim, grid=True)
@@ -255,7 +309,6 @@ class PoissonSolver:
         r = self.solution.t
         n_i = n_i_pb(model_n_i=self.model[0], y=self.solution.y[0], NkT=self._NkT, Z=self._element.z)
         n_e = n_e_pb(model_n_e=self.model[1], r=r, Qe=self._Q_e, re=self._re)
-
         # Normalization of results for plotting and all charge density distributions are set positive
         np.divide(r, self._rd, r)
         np.divide(n_i, abs(n_e[0]), n_i)
@@ -263,14 +316,54 @@ class PoissonSolver:
 
         fig, ax = plt.subplots()
         for i in range(n_i.shape[1]):
-            ax.plot(r, n_i[:, i], '--', c=self._color[0], label=r'Ions: q=' + str(i))
-        ax.plot(r, n_e, ':', c=self._color[0], label=r'Electrons: $\left|n_e\right|$')
-        ax.plot(r, n_e - n_i[:, -1], '-', c=self._color[0], label='$\delta n_{e, i}$')
+            ax.plot(r, n_i[:, i], '--', c='b', label=r'Ions: q=' + str(i))
+        ax.plot(r, n_e, ':', c='r', label=r'Electrons: $\left|n_e\right|$')
+        ax.plot(r, n_e - n_i[:, -1], '-', c='g', label='$\delta n_{e, i}$')
         x_lim, y_lim = (0, 0.1), (0, 1)
         _decorate_axes(ax, title=self._title, xlabel=r'Relative radius $\frac{r}{r_{DT}}$',
-                       ylabel=r'Relative density $\left|\frac{n_{e, i}}{n_e^0}\right|$', label_lines=True, legend=False,
-                       xlim=x_lim, ylim=y_lim, grid=True)
+                       ylabel=r'Relative density $\left|\frac{n_{e, i}}{n_e^0}\right|$',
+                       label_lines=True, legend=False, xlim=x_lim, ylim=y_lim, grid=True)
         return plt
 
+    def plot_dyn_densities(self):
+        """
+        Plots the dynamical evolution of the different density distributions (electron, ion).
 
+        """
+        if self.df_potential is None or self._df_parameters is None:
+            print("Error! Need to frame several results for dynamical plotting")
+        parameters = self._df_parameters
+        phi = self.df_potential
+        NkT = self._df_NkT
+        r = phi['r']
+        t = parameters['t']
+        re = r[r <= self._re]
+        re_err, re_idx = re[re.size - 1] / self._re, len(re)
+        Z = self._element.z
+        N_ti_dt = np.zeros((Z + 1, t.size))
+        N_ti_rh = np.zeros((Z + 1, t.size))
+        for t_i in range(t.size):
+            n_i = n_i_pb(model_n_i=parameters['ion'][t_i], y=np.array(self.df_potential[t_i + 1]),
+                         NkT=NkT[:, t_i], Z=Z)
+            q_threshold = np.arange(Z + 1)[(NkT[:Z + 1, t_i] > MINIMAL_DENSITY) & (NkT[Z + 1:, t_i] > MINIMAL_KBT)]
+            N_i_dt, N_i_rh = np.zeros(Z + 1), np.zeros(Z + 1)
+            for i in q_threshold:
+                N_i_dt[i] += simps(2 * PI * r * n_i[:, i] / Q_E / i, r)
+                N_i_rh[i] += simps(2 * PI * re * n_i[:re_idx, i] / Q_E / i, re)
+            N_ti_dt[:, t_i] += N_i_dt[:] / parameters['N_e_dt'][t_i]
+            N_ti_rh[:, t_i] += N_i_rh[:] / parameters['N_e_rh'][t_i]
+
+
+        fig, ax = plt.subplots()
+        fig_1 = plot_generic_evolution(t, N_ti_dt, xlim=(1e-6, 1e-2), ylim=(1e-29, 1),
+                                                ylabel='Relative integrated densities to drift tube [m-1]',
+                                                title=self._title, xscale="log", yscale="log", legend=False,
+                                                label_lines=True, plot_sum=False)
+        fig_2 = plot_generic_evolution(t, N_ti_rh, xlim=(1e-6, 1e-2), ylim=(1e-29, 1),
+                                            ylabel='Relative integrated densities to Hermann radius [m-1]',
+                                            title=self._title, xscale="log", yscale="log", legend=False,
+                                            label_lines=True, plot_sum=False)
+        fig.axes.append(fig_1)
+        fig.axes.append(fig_2)
+        return plt
 
