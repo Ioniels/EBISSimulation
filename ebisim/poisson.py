@@ -12,6 +12,7 @@ from .plotting import _decorate_axes, plot_generic_evolution
 from ebisim import elements
 from .densitydists import *
 from ebisim import beams
+from ebisim.plasma import ion_coll_rate_mat
 from ebisim.problems import ComplexEBISProblem
 from ebisim.physconst import EPS_0, M_E_EV, C_L
 
@@ -34,7 +35,7 @@ class PoissonSolver:
     The problem is defined in cylindrical coordinates, i.e. no dependence in (theta, z).
     """
 
-    def __init__(self, element, cur, e_kin, nb_p=10000):
+    def __init__(self, element, cur, e_kin, nb_p=1e3):
         """
         Defines the general problem constants (current density, electron energy and spread)
 
@@ -51,9 +52,10 @@ class PoissonSolver:
         self._ic = (0, 0)
         self._jac = np.zeros(2)
         self._solution = None
-        self._df_NkT = None
+        self._df_NkT = pd.DataFrame()
         self._df_parameters = None
         self._df_potential = None
+        self._df_collision_times = None
         self._no_ions = False
         # Information describing input ion and electron distributions.
         self._NkT = 0
@@ -103,6 +105,11 @@ class PoissonSolver:
         """Pandas data-frame built to visualize successive potential solution [np.ndarray in Volt]"""
         return self._df_potential
 
+    @property
+    def df_collision_times(self):
+        """Pandas data-frame built to visualize thermalization, isotropization and lte times [np.ndarray in s]"""
+        return self._df_collision_times
+
     def reset_df(self):
         """Used to reset all pandas data-frames"""
         self._df_parameters = pd.DataFrame({'electron': [], 'ion': [], 're': [], 'phi_well': [], 'rho_e_y0': [],
@@ -110,6 +117,7 @@ class PoissonSolver:
                                             'N_e_rh': [], 'N_e_dt': []})
         self._df_potential = pd.DataFrame({'r': self._r_eval})
         self._df_NkT = pd.DataFrame()
+        self._df_collision_times = pd.DataFrame()
 
     @property
     def model(self):
@@ -164,7 +172,7 @@ class PoissonSolver:
         """
         return self._jac
 
-    def solve(self, NkT, model=None, frame_para=False, frame_phi=False):
+    def solve(self, NkT, model=None, frame_para=False, frame_phi=False, frame_th_times=False):
         """
         Solves Poisson equation
 
@@ -175,11 +183,13 @@ class PoissonSolver:
         self._NkT = NkT
         if model: self.model = model
         solution = solve_ivp(self.rhs, (0, self._rd), self._ic, jac=self.jac, t_eval=self._r_eval, method='Radau')
-        # Faster option:
+        # Faster option but unstable:
         #solution = solve_ivp(self.rhs, (0, self._rd), self._ic, eval=self._r_eval, method='LSODA')
         self._solution = solution
-
-        if frame_para or frame_phi: self.frame_sol(save_para=frame_para, save_phi=frame_phi)
+        # Normalization should come here
+        idx = [self._df_NkT.shape[0]]
+        self._df_NkT = pd.concat([self._df_NkT, pd.DataFrame(self._NkT, dtype=float).T])
+        self.frame_sol(save_para=frame_para, save_phi=frame_phi, save_th_times=frame_th_times)
         return solution
 
     def solve_e(self):
@@ -197,7 +207,7 @@ class PoissonSolver:
         self._no_ions = False
         return solution
 
-    def frame_sol(self, save_para=True, save_phi=True):
+    def frame_sol(self, save_para=True, save_phi=True, save_th_times=True):
         """
         Save in pandas' data-frames important results from the previously solved problem.
 
@@ -235,6 +245,16 @@ class PoissonSolver:
             idx = [self._df_potential.shape[1]]
             self._df_potential = self._df_potential.join(pd.DataFrame({idx[0]: self.solution.y[0]}))
 
+        if save_th_times:
+            if self._df_collision_times is None:
+                self.reset_df()
+            Z, A = self._element.z, self._element.a
+            # Will need to be changed according to solve_dyn
+            N_i, kT_i = self._NkT[:Z + 1], self._NkT[Z + 1:]
+            # Inverse of the rate at which specie i approaches local thermodynamical equilibrium (lte)
+            tau_i_lte = np.array([1 / i if i != 0 else np.inf for i in
+                                  np.diag(ion_coll_rate_mat(N_i, N_i, kT_i, kT_i, A, A))])
+            self._df_collision_times = pd.concat([self._df_collision_times, pd.DataFrame(tau_i_lte).T])
         return
 
     def solve_dyn(self, model=None, reset_df=True):
@@ -246,7 +266,7 @@ class PoissonSolver:
         if model: self.model = model
         if reset_df: self.reset_df()
 
-        # Dynamical density evolution problem: to be built
+        # Dynamical density evolution problem: ¡in progress!
         j = electron_velocity(self.e_kin) * n_e_pb(model_n_e=self._model[1], r=0, Qe=self._Q_e, re=self._re)[0]
         j = abs(j) * 1e-4  # convert to A/cm**2
         problem = ComplexEBISProblem(self._element.symbol, j, self.e_kin, 15)
@@ -254,16 +274,19 @@ class PoissonSolver:
         NkT = problem.solution.y[:, ::20]
         t = problem.solution.t[::20]
         NkT[0, :] = 0
-        self._df_NkT = NkT
+
         # Start iteration for space-charge problem
         widgets = [Percentage(), ' ', Bar(), ' ', Counter(), ' / ', str(len(NkT[1, :])), ' | ', Timer(),
                    ' | ', AdaptiveETA(), ' | ', FileTransferSpeed()]
         pbar = ProgressBar(widgets=widgets, maxval=len(NkT[1, :]))
         pbar.start()
         for i in pbar(range(len(NkT[1, :]))):
-            _ = self.solve(NkT[:, i], model=model, frame_para=True, frame_phi=True)
+            _ = self.solve(NkT[:, i], model=model, frame_para=True, frame_phi=True, frame_th_times=True)
+            # Implement time as index in self._df_NkT data-frame
             pbar.update(i + 1)
         pbar.finish()
+        self._df_NkT.index = range(len(NkT[1, :]))
+        self._df_collision_times.index = range(len(NkT[1, :]))
         self._df_parameters = self._df_parameters.join(pd.DataFrame({'t': t}))
 
         return
@@ -341,9 +364,10 @@ class PoissonSolver:
         N_ti_dt = np.zeros((Z + 1, t.size))
         N_ti_rh = np.zeros((Z + 1, t.size))
         for t_i in range(t.size):
+            NkT = np.array(self.df_NkT.loc[t_i])
             n_i = n_i_pb(model_n_i=parameters['ion'][t_i], y=np.array(self.df_potential[t_i + 1]),
-                         NkT=NkT[:, t_i], Z=Z)
-            q_threshold = np.arange(Z + 1)[(NkT[:Z + 1, t_i] > MINIMAL_DENSITY) & (NkT[Z + 1:, t_i] > MINIMAL_KBT)]
+                         NkT=NkT, Z=Z)
+            q_threshold = np.arange(Z + 1)[(NkT[:Z + 1] > MINIMAL_DENSITY) & (NkT[Z + 1] > MINIMAL_KBT)]
             N_i_dt, N_i_rh = np.zeros(Z + 1), np.zeros(Z + 1)
             for i in q_threshold:
                 N_i_dt[i] += simps(2 * PI * r * n_i[:, i] / Q_E / i, r)
